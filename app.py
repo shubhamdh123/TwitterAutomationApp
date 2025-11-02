@@ -23,6 +23,7 @@ app.secret_key = os.environ.get("FLASK_SECRET", "change-me-for-prod")
 scheduler = BackgroundScheduler()
 scheduler_lock = Lock()
 
+
 # --- DB helpers ---
 def get_db():
     db = getattr(g, "_database", None)
@@ -30,6 +31,7 @@ def get_db():
         db = g._database = sqlite3.connect(DB_PATH, detect_types=sqlite3.PARSE_DECLTYPES)
         db.row_factory = sqlite3.Row
     return db
+
 
 def init_db():
     with app.app_context():
@@ -40,7 +42,7 @@ def init_db():
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             text TEXT NOT NULL,
             scheduled_utc TIMESTAMP NOT NULL,
-            status TEXT NOT NULL DEFAULT 'scheduled', -- scheduled | posted | failed
+            status TEXT NOT NULL DEFAULT 'scheduled', -- scheduled | posted | failed | cancelled
             posted_at TIMESTAMP,
             twitter_id TEXT,
             error TEXT
@@ -48,11 +50,13 @@ def init_db():
         """)
         db.commit()
 
+
 @app.teardown_appcontext
 def close_connection(exception):
     db = getattr(g, "_database", None)
     if db is not None:
         db.close()
+
 
 # --- Tweepy client (OAuth1) ---
 def get_tweepy_api():
@@ -60,12 +64,10 @@ def get_tweepy_api():
     api = tweepy.API(auth)
     return api
 
+
 # --- Posting job ---
 def post_tweet_job(scheduled_id):
-    """
-    Called by APScheduler at the scheduled UTC time.
-    Posts the tweet via Tweepy and updates DB.
-    """
+    """Called by APScheduler at the scheduled UTC time."""
     with scheduler_lock:
         db = sqlite3.connect(DB_PATH)
         db.row_factory = sqlite3.Row
@@ -76,7 +78,6 @@ def post_tweet_job(scheduled_id):
             db.close()
             return
 
-        # don't re-post
         if row["status"] != "scheduled":
             db.close()
             return
@@ -100,15 +101,16 @@ def post_tweet_job(scheduled_id):
         finally:
             db.close()
 
+
 # --- Scheduling helpers ---
 def schedule_job(scheduled_id, run_time_utc: datetime):
-    # APScheduler expects naive datetimes in UTC or with tzinfo depending on config; we'll pass tz-aware UTC
     scheduler.add_job(func=lambda: post_tweet_job(scheduled_id),
                       trigger='date',
                       run_date=run_time_utc,
                       id=f"tweet-{scheduled_id}",
                       replace_existing=True)
     print(f"Scheduled job tweet-{scheduled_id} at {run_time_utc.isoformat()}")
+
 
 def unschedule_job(scheduled_id):
     job_id = f"tweet-{scheduled_id}"
@@ -117,11 +119,9 @@ def unschedule_job(scheduled_id):
     except Exception:
         pass
 
+
 def load_and_schedule_all():
-    """
-    Load all tweets in 'scheduled' state and schedule them.
-    Also reschedule any in future (useful on start).
-    """
+    """Reschedule pending tweets on startup."""
     db = sqlite3.connect(DB_PATH)
     db.row_factory = sqlite3.Row
     cur = db.cursor()
@@ -132,13 +132,13 @@ def load_and_schedule_all():
         scheduled_time = datetime.fromisoformat(row["scheduled_utc"])
         if scheduled_time.tzinfo is None:
             scheduled_time = scheduled_time.replace(tzinfo=timezone.utc)
-        # if scheduled_time is in the past, schedule immediately (run ASAP)
         run_time = scheduled_time if scheduled_time > now else now + timedelta(seconds=5)
         try:
             schedule_job(row["id"], run_time)
         except Exception as e:
             print("Error scheduling:", e)
     db.close()
+
 
 # --- Routes ---
 @app.route("/")
@@ -147,7 +147,6 @@ def index():
     cur = db.cursor()
     cur.execute("SELECT * FROM scheduled_tweets ORDER BY scheduled_utc DESC LIMIT 200")
     rows = cur.fetchall()
-    # convert scheduled_utc string to ISO for display
     tweets = []
     for r in rows:
         tweets.append({
@@ -161,40 +160,35 @@ def index():
         })
     return render_template("index.html", tweets=tweets)
 
+
 @app.route("/schedule", methods=["POST"])
 def schedule():
     text = request.form.get("text", "").strip()
-    # client will send datetime-local value and offset minutes
-    local_dt = request.form.get("local_datetime")  # e.g. 2025-11-02T22:30
-    tz_offset_min = int(request.form.get("tz_offset_min", "0"))  # minutes offset from UTC (client -> server)
+    local_dt = request.form.get("local_datetime")
+    tz_offset_min = int(request.form.get("tz_offset_min", "0"))
+
     if not text or not local_dt:
         flash("Both tweet text and date/time required.", "danger")
         return redirect(url_for("index"))
 
-    # parse local datetime (no timezone) and convert to UTC using offset
     try:
         dt_local = datetime.fromisoformat(local_dt)
     except Exception:
         flash("Invalid date/time format.", "danger")
         return redirect(url_for("index"))
 
-    # client offset is minutes to add to local to get UTC: e.g. IST is +330 -> tz_offset_min = -330?
-    # We'll assume client sends offset = minutes *from* UTC (i.e. new Date().getTimezoneOffset()) -> returns minutes behind UTC
-    # getTimezoneOffset gives minutes to add to local to get UTC (UTC = local + offset); it's typically -330 for IST? Actually getTimezoneOffset returns minutes difference: UTC - local. For IST (UTC+5:30), getTimezoneOffset() returns -330.
-    # So UTC = local + (-offset_min) minutes? Wait: If getTimezoneOffset = -330, UTC = local + (-(-330))? Simpler: compute UTC = local + timedelta(minutes = -tz_offset_min)
     utc_dt = dt_local + timedelta(minutes=-tz_offset_min)
     utc_dt = utc_dt.replace(tzinfo=timezone.utc)
 
     db = get_db()
     cur = db.cursor()
-# Convert ISO format (with 'T' and timezone) to SQLite-safe format
-safe_time = utc_dt.isoformat().replace("T", " ").split("+")[0]
+    safe_time = utc_dt.isoformat().replace("T", " ").split("+")[0]
+    cur.execute("INSERT INTO scheduled_tweets (text, scheduled_utc, status) VALUES (?, ?, 'scheduled')",
+                (text, safe_time))
+    db.commit()
 
-cur.execute("INSERT INTO scheduled_tweets (text, scheduled_utc, status) VALUES (?, ?, 'scheduled')",
-            (text, safe_time))
-db.commit()
     scheduled_id = cur.lastrowid
-    # schedule job
+
     try:
         schedule_job(scheduled_id, utc_dt)
     except Exception as e:
@@ -202,7 +196,9 @@ db.commit()
         flash("Scheduled but couldn't schedule background job; it will be scheduled on app restart.", "warning")
     else:
         flash("Tweet scheduled successfully!", "success")
+
     return redirect(url_for("index"))
+
 
 @app.route("/cancel/<int:tid>", methods=["POST"])
 def cancel(tid):
@@ -222,9 +218,11 @@ def cancel(tid):
     flash("Cancelled scheduled tweet.", "info")
     return redirect(url_for("index"))
 
+
 @app.route("/health")
 def health():
     return jsonify({"status": "ok", "time": datetime.utcnow().isoformat()})
+
 
 # --- Startup ---
 if __name__ == "__main__":
@@ -233,7 +231,6 @@ if __name__ == "__main__":
     load_and_schedule_all()
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
 else:
-    # running under gunicorn on render
     init_db()
     scheduler.start()
     load_and_schedule_all()
