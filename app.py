@@ -192,9 +192,7 @@ safe_time = utc_dt.isoformat().replace("T", " ").split("+")[0]
 
 cur.execute("INSERT INTO scheduled_tweets (text, scheduled_utc, status) VALUES (?, ?, 'scheduled')",
             (text, safe_time))
-
-
-    db.commit()
+db.commit()
     scheduled_id = cur.lastrowid
     # schedule job
     try:
