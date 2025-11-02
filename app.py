@@ -187,8 +187,13 @@ def schedule():
 
     db = get_db()
     cur = db.cursor()
-    cur.execute("INSERT INTO scheduled_tweets (text, scheduled_utc, status) VALUES (?, ?, 'scheduled')",
-                (text, utc_dt.isoformat()))
+# Convert ISO format (with 'T' and timezone) to SQLite-safe format
+safe_time = utc_dt.isoformat().replace("T", " ").split("+")[0]
+
+cur.execute("INSERT INTO scheduled_tweets (text, scheduled_utc, status) VALUES (?, ?, 'scheduled')",
+            (text, safe_time))
+
+
     db.commit()
     scheduled_id = cur.lastrowid
     # schedule job
