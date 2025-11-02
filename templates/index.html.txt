@@ -1,0 +1,90 @@
+<!-- templates/index.html -->
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Tweet Scheduler</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+</head>
+<body class="bg-light">
+<div class="container py-4">
+  <h1 class="mb-3">Twitter Post Scheduler</h1>
+
+  {% with messages = get_flashed_messages(with_categories=true) %}
+    {% if messages %}
+      {% for category, msg in messages %}
+        <div class="alert alert-{{category}}">{{msg}}</div>
+      {% endfor %}
+    {% endif %}
+  {% endwith %}
+
+  <div class="card mb-4">
+    <div class="card-body">
+      <form method="post" action="{{ url_for('schedule') }}">
+        <div class="mb-3">
+          <label class="form-label">Tweet text (<= 280 chars)</label>
+          <textarea name="text" class="form-control" rows="3" maxlength="280" required></textarea>
+        </div>
+        <div class="mb-3">
+          <label class="form-label">Schedule date & time (your local time)</label>
+          <input id="local_datetime" name="local_datetime" type="datetime-local" class="form-control" required>
+          <input id="tz_offset_min" name="tz_offset_min" type="hidden">
+          <div class="form-text">App converts your local time to UTC before scheduling.</div>
+        </div>
+        <button class="btn btn-primary">Schedule Tweet</button>
+      </form>
+    </div>
+  </div>
+
+  <h3>Scheduled / Recent Tweets</h3>
+  <table class="table table-sm table-striped">
+    <thead>
+      <tr>
+        <th>#</th>
+        <th>Text</th>
+        <th>Scheduled (UTC)</th>
+        <th>Status</th>
+        <th>Action</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for t in tweets %}
+      <tr>
+        <td>{{ t.id }}</td>
+        <td style="max-width:420px; white-space:pre-wrap;">{{ t.text }}</td>
+        <td>{{ t.scheduled_utc }}</td>
+        <td>
+          {{ t.status }}
+          {% if t.twitter_id %}<br>TW ID: {{ t.twitter_id }}{% endif %}
+          {% if t.error %}<br><small class="text-danger">{{ t.error }}</small>{% endif %}
+        </td>
+        <td>
+          {% if t.status == 'scheduled' %}
+          <form method="post" action="{{ url_for('cancel', tid=t.id) }}" style="display:inline">
+            <button class="btn btn-sm btn-outline-danger" type="submit">Cancel</button>
+          </form>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  <footer class="mt-4 text-muted">
+    Note: For reliable on-time posting on free hosting, set up an uptime ping (UptimeRobot) to hit /health every 5-10 minutes.
+  </footer>
+</div>
+
+<script>
+  // set tz offset for server to convert to UTC
+  document.addEventListener("DOMContentLoaded", function(){
+    var offset = new Date().getTimezoneOffset(); // minutes, UTC - local
+    // Put it as negative of timezoneOffset to match server code expected value
+    // Our server expects tz_offset_min = getTimezoneOffset() (UTC - local), and uses utc = local + (-tz_offset_min)
+    // We'll send tz_offset_min = getTimezoneOffset()
+    document.getElementById("tz_offset_min").value = offset;
+  });
+</script>
+</body>
+</html>
