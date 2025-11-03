@@ -23,6 +23,12 @@ app.secret_key = os.environ.get("FLASK_SECRET", "change-me-for-prod")
 scheduler = BackgroundScheduler()
 scheduler_lock = Lock()
 
+@app.route("/post_now")
+def post_now():
+    api = get_tweepy_api()
+    resp = api.update_status(status="Testing tweet from Render app!")
+    return f"Tweeted: {resp.id}"
+
 
 # --- DB helpers ---
 def get_db():
